@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+:root {
+  --chart-grid: rgba(0, 0, 0, 0.08);
+  --chart-marker-bg: #ffffff;
+  --chart-zero-line: rgba(0, 0, 0, 0.2);
+  --chart-text: #64748b;
+}
+
+.dark {
+  --chart-grid: #2e303a;
+  --chart-marker-bg: #181a24;
+  --chart-zero-line: #1f2937;
+  --chart-text: #6b7280;
+}
+
+@layer base {
+  body {
+    @apply bg-[#07090e] text-gray-200 antialiased selection:bg-violet-500/30 selection:text-violet-200 overflow-x-hidden;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #0a0c10;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #1f2230;
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #373b54;
+  }
+}
+
+/* Animations */
+@keyframes bounce-short {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-slow {
+  0%, 100% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.animate-bounce-short {
+  animation: bounce-short 1.5s ease-in-out infinite;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 3s ease-in-out infinite;
+}
+
+/* Glassmorphism utility card glows */
+.bg-radial-gradient {
+  background: radial-gradient(var(--tw-gradient-stops));
+}
+
+/* Custom range input styling */
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  border: none;
+  transition: transform 0.1s ease;
+}
+
+input[type="range"]::-moz-range-thumb:hover {
+  transform: scale(1.25);
+}
