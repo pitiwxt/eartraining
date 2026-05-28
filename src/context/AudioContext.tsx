@@ -65,10 +65,118 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const audioBoostedRef = useRef<HTMLAudioElement | null>(null);
   const activeSourceRef = useRef<AudioSource>('original');
 
+  // Web Audio API refs
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const sourceOrigRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const sourceBoostRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const gainOrigRef = useRef<GainNode | null>(null);
+  const gainBoostRef = useRef<GainNode | null>(null);
+  const gainMasterRef = useRef<GainNode | null>(null);
+
   // Keep activeSourceRef updated
   useEffect(() => {
     activeSourceRef.current = activeSource;
   }, [activeSource]);
+
+  // Lazily initialize AudioContext on user gesture
+  const initAudio = () => {
+    if (audioContextRef.current) {
+      if (audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume().catch(e => console.log('Error resuming AudioContext:', e));
+      }
+      return;
+    }
+
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+
+    try {
+      // Set to 48kHz to match our WAV sample rate exactly (avoids double resampling)
+      // and use 'playback' latencyHint for higher quality interpolation
+      const audioCtx = new AudioContextClass({
+        latencyHint: 'playback',
+        sampleRate: 48000
+      });
+
+      const orig = audioOriginalRef.current;
+      const boost = audioBoostedRef.current;
+
+      if (orig && boost) {
+        orig.crossOrigin = 'anonymous';
+        boost.crossOrigin = 'anonymous';
+
+        const srcOrig = audioCtx.createMediaElementSource(orig);
+        const srcBoost = audioCtx.createMediaElementSource(boost);
+
+        const gOrig = audioCtx.createGain();
+        const gBoost = audioCtx.createGain();
+        const gMaster = audioCtx.createGain();
+
+        srcOrig.connect(gOrig);
+        srcBoost.connect(gBoost);
+
+        gOrig.connect(gMaster);
+        gBoost.connect(gMaster);
+
+        gMaster.connect(audioCtx.destination);
+
+        audioContextRef.current = audioCtx;
+        sourceOrigRef.current = srcOrig;
+        sourceBoostRef.current = srcBoost;
+        gainOrigRef.current = gOrig;
+        gainBoostRef.current = gBoost;
+        gainMasterRef.current = gMaster;
+
+        // Bypasses HTMLMediaElement internal volume scaling to avoid resolution loss
+        orig.volume = 1.0;
+        boost.volume = 1.0;
+
+        // Apply current volume & mute states to Web Audio Graph
+        const targetVolume = isMuted ? 0 : volume;
+        gMaster.gain.setValueAtTime(targetVolume, audioCtx.currentTime);
+
+        // Sync initial routing states
+        if (currentFreqValue === undefined) {
+          gOrig.gain.setValueAtTime(1.0, audioCtx.currentTime);
+          gBoost.gain.setValueAtTime(0.0, audioCtx.currentTime);
+        } else if (activeSourceRef.current === 'original') {
+          gOrig.gain.setValueAtTime(1.0, audioCtx.currentTime);
+          gBoost.gain.setValueAtTime(0.0, audioCtx.currentTime);
+        } else {
+          gOrig.gain.setValueAtTime(0.0, audioCtx.currentTime);
+          gBoost.gain.setValueAtTime(1.0, audioCtx.currentTime);
+        }
+      }
+    } catch (err) {
+      console.log('Failed to create AudioContext:', err);
+    }
+  };
+
+  const syncGains = (
+    ctx = audioContextRef.current,
+    gOrig = gainOrigRef.current,
+    gBoost = gainBoostRef.current,
+    gMaster = gainMasterRef.current
+  ) => {
+    if (!ctx || !gOrig || !gBoost || !gMaster) return;
+
+    const targetVolume = isMuted ? 0 : volume;
+    const time = ctx.currentTime;
+
+    // Smooth gain change over 10ms to prevent clicks
+    gMaster.gain.setTargetAtTime(targetVolume, time, 0.01);
+
+    if (currentFreqValue === undefined) {
+      gOrig.gain.setTargetAtTime(1.0, time, 0.005);
+      gBoost.gain.setTargetAtTime(0.0, time, 0.005);
+    } else if (activeSourceRef.current === 'original') {
+      gOrig.gain.setTargetAtTime(1.0, time, 0.005);
+      gBoost.gain.setTargetAtTime(0.0, time, 0.005);
+    } else {
+      gOrig.gain.setTargetAtTime(0.0, time, 0.005);
+      gBoost.gain.setTargetAtTime(1.0, time, 0.005);
+    }
+  };
 
   // Initialize audio elements and events on mount
   useEffect(() => {
@@ -77,6 +185,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     audioOrig.preload = 'auto';
     audioBoost.preload = 'auto';
+    audioOrig.crossOrigin = 'anonymous';
+    audioBoost.crossOrigin = 'anonymous';
 
     audioOriginalRef.current = audioOrig;
     audioBoostedRef.current = audioBoost;
@@ -113,6 +223,20 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setCurrentTime(audioOriginalRef.current.currentTime);
       } else if (currentActive === 'boosted' && target === audioBoostedRef.current) {
         setCurrentTime(audioBoostedRef.current.currentTime);
+      }
+
+      // Keep playheads strictly synchronized during playback
+      const orig = audioOriginalRef.current;
+      const boost = audioBoostedRef.current;
+      if (orig && boost && currentFreqValue !== undefined && !orig.paused && !boost.paused) {
+        const diff = Math.abs(orig.currentTime - boost.currentTime);
+        if (diff > 0.05) { // If they drift by more than 50ms, force sync
+          if (activeSourceRef.current === 'original') {
+            safeSetCurrentTime(boost, orig.currentTime);
+          } else {
+            safeSetCurrentTime(orig, boost.currentTime);
+          }
+        }
       }
     };
 
@@ -161,6 +285,11 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       audioBoost.removeEventListener('timeupdate', handleTimeUpdate);
       audioBoost.removeEventListener('ended', handleEnded);
 
+      // Clean up AudioContext if it exists
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(err => console.log('Error closing AudioContext on unmount:', err));
+      }
+
       audioOriginalRef.current = null;
       audioBoostedRef.current = null;
     };
@@ -168,174 +297,77 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Synchronize audio channels volume and source
   useEffect(() => {
-    updateVolumes();
-  }, [activeSource, volume, isMuted, currentFreqValue, isPlaying]);
+    if (audioContextRef.current) {
+      syncGains();
+    } else {
+      // Fallback: direct volume control before AudioContext is initialized
+      const orig = audioOriginalRef.current;
+      const boost = audioBoostedRef.current;
+      if (orig && boost) {
+        const targetVolume = isMuted ? 0 : volume;
+        if (currentFreqValue === undefined) {
+          orig.volume = targetVolume;
+          boost.volume = 0;
+        } else if (activeSource === 'original') {
+          orig.volume = targetVolume;
+          boost.volume = 0;
+        } else {
+          orig.volume = 0;
+          boost.volume = targetVolume;
+        }
+      }
+    }
+  }, [activeSource, volume, isMuted, currentFreqValue]);
 
-  const updateVolumes = () => {
+  // Synchronize playback play/pause state
+  useEffect(() => {
     const orig = audioOriginalRef.current;
     const boost = audioBoostedRef.current;
     if (!orig || !boost) return;
 
-    const targetVolume = isMuted ? 0 : volume;
-
-    if (currentFreqValue === undefined) {
-      orig.volume = targetVolume;
-      boost.volume = 0;
-      return;
-    }
-
-    if (activeSource === 'original') {
-      orig.volume = targetVolume;
-      boost.volume = 0;
-    } else {
-      orig.volume = 0;
-      boost.volume = targetVolume;
-    }
-
-    // Play active track / pause inactive track
     if (isPlaying) {
-      if (activeSource === 'original') {
-        if (orig.paused) {
-          orig.play().catch(err => console.log('Original play error in volume sync:', err));
+      if (orig.paused) {
+        orig.play().catch(err => console.log('Original play error in isPlaying effect:', err));
+      }
+      if (currentFreqValue !== undefined) {
+        // Sync boosted playhead to match original before trigger
+        safeSetCurrentTime(boost, orig.currentTime);
+        if (boost.paused) {
+          boost.play().catch(err => console.log('Boosted play error in isPlaying effect:', err));
         }
-        if (!boost.paused) boost.pause();
-      } else {
-        if (boost.paused && currentFreqValue !== undefined) {
-          boost.play().catch(err => console.log('Boosted play error in volume sync:', err));
-        }
-        if (!orig.paused) orig.pause();
       }
     } else {
       if (!orig.paused) orig.pause();
       if (!boost.paused) boost.pause();
     }
-  };
-
-  const playAudio = () => {
-    const orig = audioOriginalRef.current;
-    const boost = audioBoostedRef.current;
-    if (!orig || !boost) return;
-
-    setIsPlaying(true);
-
-    const targetVolume = isMuted ? 0 : volume;
-    orig.volume = activeSource === 'original' ? targetVolume : 0;
-    boost.volume = activeSource === 'boosted' ? targetVolume : 0;
-
-    if (activeSource === 'original') {
-      orig.play()
-        .then(() => {
-          boost.pause();
-        })
-        .catch(err => console.log('Original playback error:', err));
-    } else {
-      if (currentFreqValue !== undefined) {
-        safeSetCurrentTime(boost, orig.currentTime);
-        boost.play()
-          .then(() => {
-            orig.pause();
-          })
-          .catch(err => console.log('Boosted playback error:', err));
-      } else {
-        orig.play()
-          .then(() => {
-            boost.pause();
-          })
-          .catch(err => console.log('Original play fallback error:', err));
-      }
-    }
-  };
-
-  const pauseAudio = () => {
-    if (audioOriginalRef.current) audioOriginalRef.current.pause();
-    if (audioBoostedRef.current) audioBoostedRef.current.pause();
-    setIsPlaying(false);
-  };
+  }, [isPlaying, currentFreqValue]);
 
   const play = () => {
-    playAudio();
+    initAudio();
+    setIsPlaying(true);
   };
 
   const pause = () => {
-    pauseAudio();
+    setIsPlaying(false);
   };
 
   const togglePlay = () => {
-    if (isPlaying) {
-      pauseAudio();
-    } else {
-      playAudio();
-    }
+    initAudio();
+    setIsPlaying(prev => !prev);
   };
 
   const setActiveSource = (source: AudioSource) => {
+    initAudio();
     setActiveSourceState(source);
-    
-    const orig = audioOriginalRef.current;
-    const boost = audioBoostedRef.current;
-    if (!orig || !boost) return;
-
-    const targetVolume = isMuted ? 0 : volume;
-    orig.volume = source === 'original' ? targetVolume : 0;
-    boost.volume = source === 'boosted' ? targetVolume : 0;
-
-    if (isPlaying) {
-      if (source === 'original') {
-        safeSetCurrentTime(orig, boost.currentTime);
-        orig.play()
-          .then(() => {
-            boost.pause();
-          })
-          .catch(err => console.log('Original play error in setActiveSource:', err));
-      } else {
-        if (currentFreqValue !== undefined) {
-          safeSetCurrentTime(boost, orig.currentTime);
-          boost.play()
-            .then(() => {
-              orig.pause();
-            })
-            .catch(err => console.log('Boosted play error in setActiveSource:', err));
-        }
-      }
-    }
   };
 
   const toggleSource = () => {
-    setActiveSourceState(prev => {
-      const next = prev === 'original' ? 'boosted' : 'original';
-      
-      const orig = audioOriginalRef.current;
-      const boost = audioBoostedRef.current;
-      if (orig && boost) {
-        const targetVolume = isMuted ? 0 : volume;
-        orig.volume = next === 'original' ? targetVolume : 0;
-        boost.volume = next === 'boosted' ? targetVolume : 0;
-
-        if (isPlaying) {
-          if (next === 'original') {
-            safeSetCurrentTime(orig, boost.currentTime);
-            orig.play()
-              .then(() => {
-                boost.pause();
-              })
-              .catch(err => console.log('Original play error in toggleSource:', err));
-          } else {
-            if (currentFreqValue !== undefined) {
-              safeSetCurrentTime(boost, orig.currentTime);
-              boost.play()
-                .then(() => {
-                  orig.pause();
-                })
-                .catch(err => console.log('Boosted play error in toggleSource:', err));
-            }
-          }
-        }
-      }
-      return next;
-    });
+    initAudio();
+    setActiveSourceState(prev => (prev === 'original' ? 'boosted' : 'original'));
   };
 
   const seek = (time: number) => {
+    initAudio();
     const orig = audioOriginalRef.current;
     const boost = audioBoostedRef.current;
     if (!orig || !boost) return;
@@ -346,6 +378,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const setVolume = (vol: number) => {
+    initAudio();
     const cleanVol = Math.max(0, Math.min(1, vol));
     setVolumeState(cleanVol);
   };
@@ -353,6 +386,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const loadTrack = (songId: string, freqValue: number | undefined) => {
     setCurrentSongId(songId);
     setCurrentFreqValue(freqValue);
+    setCurrentTime(0); // reset playback timer UI
     
     const orig = audioOriginalRef.current;
     const boost = audioBoostedRef.current;
@@ -364,34 +398,14 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     orig.src = paths.original;
     orig.load();
 
-    // If frequency is undefined, pause boost
     if (freqValue === undefined) {
-      boost.pause();
-      if (isPlaying) {
-        orig.play().catch(e => console.log(e));
-      }
+      boost.removeAttribute('src');
+      boost.load();
       return;
     }
 
     boost.src = paths.boosted;
     boost.load();
-
-    if (isPlaying) {
-      if (activeSource === 'original') {
-        orig.play()
-          .then(() => {
-            boost.pause();
-          })
-          .catch(e => console.log(e));
-      } else {
-        safeSetCurrentTime(boost, orig.currentTime);
-        boost.play()
-          .then(() => {
-            orig.pause();
-          })
-          .catch(e => console.log(e));
-      }
-    }
   };
 
   const setSong = (songId: string) => {
@@ -403,6 +417,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const toggleMute = () => {
+    initAudio();
     setIsMuted(prev => !prev);
   };
 
