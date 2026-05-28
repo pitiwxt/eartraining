@@ -224,11 +224,10 @@ export function getAudioPaths(songId: string, freqValue?: number): { original: s
     throw new Error(`Song with ID ${songId} not found`);
   }
 
-  const mp3Suffix = song.fileNameSuffix.replace('.wav', '.mp3');
-  const original = `/audio/No EQ ${mp3Suffix}`;
+  const original = `/audio/No EQ ${song.fileNameSuffix}`;
   let boosted = '';
   if (freqValue !== undefined) {
-    boosted = `/audio/${freqValue} Hz/${freqValue} Hz 7 db Narrow ${mp3Suffix}`;
+    boosted = `/audio/${freqValue} Hz/${freqValue} Hz 7 db Narrow ${song.fileNameSuffix}`;
   }
 
   return { original, boosted };
